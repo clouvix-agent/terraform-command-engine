@@ -55,3 +55,4 @@ terraform.rc
 # Logs
 *.log
 logs/
+main.tf
