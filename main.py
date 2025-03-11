@@ -48,9 +48,29 @@ async def create_terraform_workspace(terraform_file: UploadFile, variables: Dict
     
     # Write variables if provided
     if variables:
-        with open(f"{workspace_dir}/terraform.tfvars", "w") as f:
-            for key, value in variables.items():
-                f.write(f'{key} = "{value}"\n')
+        # Handle AWS credentials if present
+        aws_credentials = {}
+        for key in ['aws_access_key', 'aws_secret_key', 'aws_region']:
+            if key in variables:
+                aws_credentials[key] = variables.pop(key)
+        
+        # Write AWS credentials to provider configuration if present
+        if aws_credentials:
+            with open(f"{workspace_dir}/provider.tf", "w") as f:
+                f.write('provider "aws" {\n')
+                if 'aws_access_key' in aws_credentials:
+                    f.write(f'  access_key = "{aws_credentials["aws_access_key"]}"\n')
+                if 'aws_secret_key' in aws_credentials:
+                    f.write(f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n')
+                if 'aws_region' in aws_credentials:
+                    f.write(f'  region     = "{aws_credentials["aws_region"]}"\n')
+                f.write('}\n')
+        
+        # Write remaining variables to terraform.tfvars
+        if variables:
+            with open(f"{workspace_dir}/terraform.tfvars", "w") as f:
+                for key, value in variables.items():
+                    f.write(f'{key} = "{value}"\n')
 
 async def execute_terraform_command(command: list, workspace_dir: str) -> Dict:
     """Execute terraform command and return the output."""
