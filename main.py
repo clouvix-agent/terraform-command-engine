@@ -102,7 +102,14 @@ async def validate_terraform(
             workspace_dir
         )
         if not init_result["success"]:
-            return {"success": False, "error": init_result["error"]}
+            return {
+                "success": False,
+                "error": init_result["error"],
+                "details": {
+                    "type": "initialization_error",
+                    "message": "Failed to initialize terraform workspace"
+                }
+            }
         
         # Validate terraform
         validate_result = await execute_terraform_command(
@@ -110,13 +117,32 @@ async def validate_terraform(
             workspace_dir
         )
         
-        return {
-            "success": validate_result["success"],
-            "output": json.loads(validate_result["output"]) if validate_result["success"] else None,
-            "error": validate_result["error"]
-        }
+        if validate_result["success"]:
+            return {
+                "success": True,
+                "output": json.loads(validate_result["output"])
+            }
+        else:
+            return {
+                "success": False,
+                "error": validate_result["error"],
+                "details": {
+                    "type": "validation_error",
+                    "message": "Terraform configuration validation failed"
+                }
+            }
+            
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON format for variables")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            "details": {
+                "type": "unexpected_error",
+                "message": "An unexpected error occurred during validation"
+            }
+        }
     finally:
         await cleanup_workspace(workspace_dir)
 
