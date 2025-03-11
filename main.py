@@ -13,13 +13,11 @@ import uuid
 from collections import deque
 from threading import Lock
 
-# Load environment variables
 load_dotenv()
 
 app = FastAPI(title="Terraform Execution Engine")
 security = HTTPBearer()
 
-# Queue for terraform operations
 terraform_queue = deque()
 queue_lock = Lock()
 current_execution = None
@@ -37,46 +35,96 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     return credentials
 
+
 async def create_terraform_workspace(terraform_file: UploadFile, variables: Dict[str, str], workspace_dir: str):
-    """Create a temporary workspace with terraform file and variables."""
+    """Create a temporary workspace with terraform file and variables for AWS, GCP, and Azure."""
+    
     os.makedirs(workspace_dir, exist_ok=True)
     
-    # Write terraform file
     file_content = await terraform_file.read()
     file_content_str = file_content.decode('utf-8')
     
-    # Handle AWS credentials if present in variables
     if variables:
+        # Extract AWS Credentials
         aws_credentials = {}
         for key in ['aws_access_key', 'aws_secret_key', 'aws_region']:
             if key in variables:
                 aws_credentials[key] = variables.pop(key)
-        
-        # If we have AWS credentials and there's a provider block in main.tf
-        if aws_credentials and 'provider "aws"' in file_content_str:
-            # Create provider configuration
-            provider_config = []
-            if 'aws_access_key' in aws_credentials:
-                provider_config.append(f'  access_key = "{aws_credentials["aws_access_key"]}"')
-            if 'aws_secret_key' in aws_credentials:
-                provider_config.append(f'  secret_key = "{aws_credentials["aws_secret_key"]}"')
-            if 'aws_region' in aws_credentials:
-                provider_config.append(f'  region     = "{aws_credentials["aws_region"]}"')
-            
-            # Replace empty provider block with configured one
-            provider_block = 'provider "aws" {\n' + '\n'.join(provider_config) + '\n}'
-            file_content_str = file_content_str.replace('provider "aws" {}', provider_block)
-            file_content_str = file_content_str.replace('provider "aws" {', 'provider "aws" {\n' + '\n'.join(provider_config))
-    
-    # Write the modified main.tf
+
+        # Extract GCP Credentials
+        gcp_credentials = {}
+        if "gcp_credentials_file" in variables:
+            gcp_credentials["credentials_file"] = variables.pop("gcp_credentials_file")
+
+        # Extract Azure Credentials
+        azure_credentials = {}
+        for key in ["azure_client_id", "azure_client_secret", "azure_subscription_id", "azure_tenant_id"]:
+            if key in variables:
+                azure_credentials[key] = variables.pop(key)
+
+        # Inject AWS Provider Block
+        if aws_credentials:
+            provider_block = 'provider "aws" {\n'
+            if "aws_access_key" in aws_credentials:
+                provider_block += f'  access_key = "{aws_credentials["aws_access_key"]}"\n'
+            if "aws_secret_key" in aws_credentials:
+                provider_block += f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n'
+            if "aws_region" in aws_credentials:
+                provider_block += f'  region     = "{aws_credentials["aws_region"]}"\n'
+            provider_block += '}'
+
+            if 'provider "aws"' in file_content_str:
+                # Modify existing provider block
+                file_content_str = file_content_str.replace('provider "aws" {}', provider_block)
+                file_content_str = file_content_str.replace('provider "aws" {', provider_block)
+            else:
+                # Add new provider block if missing
+                file_content_str += f"\n{provider_block}\n"
+
+        # Inject GCP Provider Block
+        if gcp_credentials:
+            provider_block = 'provider "google" {\n'
+            if "credentials_file" in gcp_credentials:
+                provider_block += f'  credentials = file("{gcp_credentials["credentials_file"]}")\n'
+            provider_block += '}'
+
+            if 'provider "google"' in file_content_str:
+                file_content_str = file_content_str.replace('provider "google" {}', provider_block)
+                file_content_str = file_content_str.replace('provider "google" {', provider_block)
+            else:
+                file_content_str += f"\n{provider_block}\n"
+
+        # Inject Azure Provider Block
+        if azure_credentials:
+            provider_block = 'provider "azurerm" {\n'
+            provider_block += '  features {}\n' 
+            if "azure_client_id" in azure_credentials:
+                provider_block += f'  client_id       = "{azure_credentials["azure_client_id"]}"\n'
+            if "azure_client_secret" in azure_credentials:
+                provider_block += f'  client_secret   = "{azure_credentials["azure_client_secret"]}"\n'
+            if "azure_subscription_id" in azure_credentials:
+                provider_block += f'  subscription_id = "{azure_credentials["azure_subscription_id"]}"\n'
+            if "azure_tenant_id" in azure_credentials:
+                provider_block += f'  tenant_id       = "{azure_credentials["azure_tenant_id"]}"\n'
+            provider_block += '}'
+
+            if 'provider "azurerm"' in file_content_str:
+                file_content_str = file_content_str.replace('provider "azurerm" {}', provider_block)
+                file_content_str = file_content_str.replace('provider "azurerm" {', provider_block)
+            else:
+                file_content_str += f"\n{provider_block}\n"
+
+    # Save the modified Terraform file
     with open(f"{workspace_dir}/main.tf", "w") as f:
         f.write(file_content_str)
     
-    # Write remaining variables to terraform.tfvars if any exist
+    # Save other variables to terraform.tfvars
     if variables:
         with open(f"{workspace_dir}/terraform.tfvars", "w") as f:
             for key, value in variables.items():
                 f.write(f'{key} = "{value}"\n')
+
+
 
 async def execute_terraform_command(command: list, workspace_dir: str) -> Dict:
     """Execute terraform command and return the output."""
@@ -113,11 +161,10 @@ async def validate_terraform(
     variables: str = Form(None),
     credentials: HTTPAuthorizationCredentials = Depends(verify_token)
 ):
-    """Validate terraform code."""
+    """Validate terraform code and run plan, apply, and destroy if validation succeeds."""
     workspace_dir = f"/app/terraform_workspace/{uuid.uuid4()}"
     
     try:
-        # Parse variables from JSON string if provided
         parsed_variables = json.loads(variables) if variables else None
         
         await create_terraform_workspace(terraform_file, parsed_variables, workspace_dir)
@@ -143,12 +190,7 @@ async def validate_terraform(
             workspace_dir
         )
         
-        if validate_result["success"]:
-            return {
-                "success": True,
-                "output": json.loads(validate_result["output"])
-            }
-        else:
+        if not validate_result["success"]:
             return {
                 "success": False,
                 "error": validate_result["error"],
@@ -158,6 +200,60 @@ async def validate_terraform(
                 }
             }
             
+        # Plan terraform
+        plan_result = await execute_terraform_command(
+            ["terraform", "plan"],
+            workspace_dir
+        )
+        if not plan_result["success"]:
+            return {
+                "success": False,
+                "error": plan_result["error"],
+                "details": {
+                    "type": "plan_error",
+                    "message": "Terraform plan failed"
+                }
+            }
+            
+        # Apply terraform
+        apply_result = await execute_terraform_command(
+            ["terraform", "apply", "-auto-approve"],
+            workspace_dir
+        )
+        if not apply_result["success"]:
+            return {
+                "success": False,
+                "error": apply_result["error"],
+                "details": {
+                    "type": "apply_error",
+                    "message": "Terraform apply failed"
+                }
+            }
+            
+        # Destroy terraform
+        destroy_result = await execute_terraform_command(
+            ["terraform", "destroy", "-auto-approve"],
+            workspace_dir
+        )
+        if not destroy_result["success"]:
+            return {
+                "success": False,
+                "error": destroy_result["error"],
+                "details": {
+                    "type": "destroy_error",
+                    "message": "Terraform destroy failed"
+                }
+            }
+            
+        # If all steps succeeded, return success with all outputs
+        return {
+            "success": True,
+            "validation": json.loads(validate_result["output"]),
+            "plan": plan_result["output"],
+            "apply": apply_result["output"],
+            "destroy": destroy_result["output"]
+        }
+            
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON format for variables")
     except Exception as e:
@@ -166,7 +262,7 @@ async def validate_terraform(
             "error": str(e),
             "details": {
                 "type": "unexpected_error",
-                "message": "An unexpected error occurred during validation"
+                "message": "An unexpected error occurred during execution"
             }
         }
     finally:
@@ -182,15 +278,11 @@ async def execute_terraform(
     global current_execution
     
     try:
-        # Parse variables from JSON string if provided
         parsed_variables = json.loads(variables) if variables else None
-        
-        # Generate a unique ID for this execution
         execution_id = str(uuid.uuid4())
         workspace_dir = f"/app/terraform_workspace/{execution_id}"
         
         with queue_lock:
-            # Add to queue if there's already an execution in progress
             if current_execution:
                 terraform_queue.append((execution_id, terraform_file, parsed_variables))
                 return {
@@ -203,7 +295,6 @@ async def execute_terraform(
         try:
             await create_terraform_workspace(terraform_file, parsed_variables, workspace_dir)
             
-            # Initialize terraform
             init_result = await execute_terraform_command(
                 ["terraform", "init"],
                 workspace_dir
@@ -211,7 +302,6 @@ async def execute_terraform(
             if not init_result["success"]:
                 return {"success": False, "error": init_result["error"]}
             
-            # Plan terraform
             plan_result = await execute_terraform_command(
                 ["terraform", "plan"],
                 workspace_dir
@@ -219,7 +309,6 @@ async def execute_terraform(
             if not plan_result["success"]:
                 return {"success": False, "error": plan_result["error"]}
             
-            # Apply terraform
             apply_result = await execute_terraform_command(
                 ["terraform", "apply", "-auto-approve"],
                 workspace_dir
@@ -235,7 +324,6 @@ async def execute_terraform(
             await cleanup_workspace(workspace_dir)
             with queue_lock:
                 current_execution = None
-                # Process next item in queue if any
                 if terraform_queue:
                     next_id, next_file, next_vars = terraform_queue.popleft()
                     asyncio.create_task(execute_terraform(next_file, next_vars, credentials))
