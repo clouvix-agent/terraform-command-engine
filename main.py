@@ -43,34 +43,40 @@ async def create_terraform_workspace(terraform_file: UploadFile, variables: Dict
     
     # Write terraform file
     file_content = await terraform_file.read()
-    with open(f"{workspace_dir}/main.tf", "wb") as f:
-        f.write(file_content)
+    file_content_str = file_content.decode('utf-8')
     
-    # Write variables if provided
+    # Handle AWS credentials if present in variables
     if variables:
-        # Handle AWS credentials if present
         aws_credentials = {}
         for key in ['aws_access_key', 'aws_secret_key', 'aws_region']:
             if key in variables:
                 aws_credentials[key] = variables.pop(key)
         
-        # Write AWS credentials to provider configuration if present
-        if aws_credentials:
-            with open(f"{workspace_dir}/provider.tf", "w") as f:
-                f.write('provider "aws" {\n')
-                if 'aws_access_key' in aws_credentials:
-                    f.write(f'  access_key = "{aws_credentials["aws_access_key"]}"\n')
-                if 'aws_secret_key' in aws_credentials:
-                    f.write(f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n')
-                if 'aws_region' in aws_credentials:
-                    f.write(f'  region     = "{aws_credentials["aws_region"]}"\n')
-                f.write('}\n')
-        
-        # Write remaining variables to terraform.tfvars
-        if variables:
-            with open(f"{workspace_dir}/terraform.tfvars", "w") as f:
-                for key, value in variables.items():
-                    f.write(f'{key} = "{value}"\n')
+        # If we have AWS credentials and there's a provider block in main.tf
+        if aws_credentials and 'provider "aws"' in file_content_str:
+            # Create provider configuration
+            provider_config = []
+            if 'aws_access_key' in aws_credentials:
+                provider_config.append(f'  access_key = "{aws_credentials["aws_access_key"]}"')
+            if 'aws_secret_key' in aws_credentials:
+                provider_config.append(f'  secret_key = "{aws_credentials["aws_secret_key"]}"')
+            if 'aws_region' in aws_credentials:
+                provider_config.append(f'  region     = "{aws_credentials["aws_region"]}"')
+            
+            # Replace empty provider block with configured one
+            provider_block = 'provider "aws" {\n' + '\n'.join(provider_config) + '\n}'
+            file_content_str = file_content_str.replace('provider "aws" {}', provider_block)
+            file_content_str = file_content_str.replace('provider "aws" {', 'provider "aws" {\n' + '\n'.join(provider_config))
+    
+    # Write the modified main.tf
+    with open(f"{workspace_dir}/main.tf", "w") as f:
+        f.write(file_content_str)
+    
+    # Write remaining variables to terraform.tfvars if any exist
+    if variables:
+        with open(f"{workspace_dir}/terraform.tfvars", "w") as f:
+            for key, value in variables.items():
+                f.write(f'{key} = "{value}"\n')
 
 async def execute_terraform_command(command: list, workspace_dir: str) -> Dict:
     """Execute terraform command and return the output."""
