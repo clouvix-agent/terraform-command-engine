@@ -3,7 +3,7 @@ import json
 import shutil
 import asyncio
 from typing import Dict, Optional
-from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi import FastAPI, HTTPException, Depends, Header, UploadFile, File
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -25,7 +25,6 @@ queue_lock = Lock()
 current_execution = None
 
 class TerraformRequest(BaseModel):
-    terraform_code: str
     variables: Optional[Dict[str, str]] = None
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
@@ -38,13 +37,14 @@ def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     return credentials
 
-async def create_terraform_workspace(terraform_code: str, variables: Dict[str, str], workspace_dir: str):
-    """Create a temporary workspace with terraform code and variables."""
+async def create_terraform_workspace(terraform_file: UploadFile, variables: Dict[str, str], workspace_dir: str):
+    """Create a temporary workspace with terraform file and variables."""
     os.makedirs(workspace_dir, exist_ok=True)
     
-    # Write terraform code
-    with open(f"{workspace_dir}/main.tf", "w") as f:
-        f.write(terraform_code)
+    # Write terraform file
+    file_content = await terraform_file.read()
+    with open(f"{workspace_dir}/main.tf", "wb") as f:
+        f.write(file_content)
     
     # Write variables if provided
     if variables:
@@ -83,14 +83,15 @@ async def cleanup_workspace(workspace_dir: str):
 
 @app.post("/validate")
 async def validate_terraform(
-    request: TerraformRequest,
+    terraform_file: UploadFile = File(...),
+    variables: Optional[Dict[str, str]] = None,
     credentials: HTTPAuthorizationCredentials = Depends(verify_token)
 ):
     """Validate terraform code."""
     workspace_dir = f"/app/terraform_workspace/{uuid.uuid4()}"
     
     try:
-        await create_terraform_workspace(request.terraform_code, request.variables, workspace_dir)
+        await create_terraform_workspace(terraform_file, variables, workspace_dir)
         
         # Initialize terraform
         init_result = await execute_terraform_command(
@@ -117,7 +118,8 @@ async def validate_terraform(
 
 @app.post("/execute")
 async def execute_terraform(
-    request: TerraformRequest,
+    terraform_file: UploadFile = File(...),
+    variables: Optional[Dict[str, str]] = None,
     credentials: HTTPAuthorizationCredentials = Depends(verify_token)
 ):
     """Execute terraform code."""
@@ -130,7 +132,7 @@ async def execute_terraform(
     with queue_lock:
         # Add to queue if there's already an execution in progress
         if current_execution:
-            terraform_queue.append((execution_id, request))
+            terraform_queue.append((execution_id, terraform_file, variables))
             return {
                 "status": "queued",
                 "position": len(terraform_queue),
@@ -139,7 +141,7 @@ async def execute_terraform(
         current_execution = execution_id
     
     try:
-        await create_terraform_workspace(request.terraform_code, request.variables, workspace_dir)
+        await create_terraform_workspace(terraform_file, variables, workspace_dir)
         
         # Initialize terraform
         init_result = await execute_terraform_command(
@@ -175,8 +177,8 @@ async def execute_terraform(
             current_execution = None
             # Process next item in queue if any
             if terraform_queue:
-                next_id, next_request = terraform_queue.popleft()
-                asyncio.create_task(execute_terraform(next_request, credentials))
+                next_id, next_file, next_vars = terraform_queue.popleft()
+                asyncio.create_task(execute_terraform(next_file, next_vars, credentials))
 
 @app.get("/queue-status")
 async def get_queue_status(
