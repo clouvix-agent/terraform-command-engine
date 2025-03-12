@@ -71,15 +71,24 @@ async def create_terraform_workspace(terraform_file: UploadFile, variables: Dict
                 provider_block += f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n'
             if "aws_region" in aws_credentials:
                 provider_block += f'  region     = "{aws_credentials["aws_region"]}"\n'
-            provider_block += '}'
+            provider_block += '}\n'
 
-            if 'provider "aws"' in file_content_str:
-                # Modify existing provider block
-                file_content_str = file_content_str.replace('provider "aws" {}', provider_block)
-                file_content_str = file_content_str.replace('provider "aws" {', provider_block)
-            else:
-                # Add new provider block if missing
-                file_content_str += f"\n{provider_block}\n"
+            # Remove any existing AWS provider blocks
+            lines = file_content_str.split('\n')
+            new_lines = []
+            skip = False
+            for line in lines:
+                if 'provider "aws"' in line:
+                    skip = True
+                    continue
+                if skip and '}' in line:
+                    skip = False
+                    continue
+                if not skip:
+                    new_lines.append(line)
+            
+            file_content_str = '\n'.join(new_lines)
+            file_content_str = provider_block + file_content_str
 
         # Inject GCP Provider Block
         if gcp_credentials:
