@@ -203,6 +203,11 @@ async def validate_terraform(
             workspace_dir
         )
         if not init_result["success"]:
+            # Attempt to destroy before returning error
+            await execute_terraform_command(
+                ["terraform", "destroy", "-auto-approve"],
+                workspace_dir
+            )
             return {
                 "success": False,
                 "error": init_result["error"],
@@ -219,6 +224,11 @@ async def validate_terraform(
         )
         
         if not validate_result["success"]:
+            # Attempt to destroy before returning error
+            await execute_terraform_command(
+                ["terraform", "destroy", "-auto-approve"],
+                workspace_dir
+            )
             return {
                 "success": False,
                 "error": validate_result["error"],
@@ -234,6 +244,11 @@ async def validate_terraform(
             workspace_dir
         )
         if not plan_result["success"]:
+            # Attempt to destroy before returning error
+            await execute_terraform_command(
+                ["terraform", "destroy", "-auto-approve"],
+                workspace_dir
+            )
             return {
                 "success": False,
                 "error": plan_result["error"],
@@ -249,6 +264,11 @@ async def validate_terraform(
             workspace_dir
         )
         if not apply_result["success"]:
+            # Attempt to destroy before returning error
+            await execute_terraform_command(
+                ["terraform", "destroy", "-auto-approve"],
+                workspace_dir
+            )
             return {
                 "success": False,
                 "error": apply_result["error"],
@@ -283,8 +303,18 @@ async def validate_terraform(
         }
             
     except json.JSONDecodeError:
+        # Attempt to destroy before returning error
+        await execute_terraform_command(
+            ["terraform", "destroy", "-auto-approve"],
+            workspace_dir
+        )
         raise HTTPException(status_code=400, detail="Invalid JSON format for variables")
     except Exception as e:
+        # Attempt to destroy before returning error
+        await execute_terraform_command(
+            ["terraform", "destroy", "-auto-approve"],
+            workspace_dir
+        )
         return {
             "success": False,
             "error": str(e),
