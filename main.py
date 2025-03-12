@@ -12,6 +12,7 @@ from pathlib import Path
 import uuid
 from collections import deque
 from threading import Lock
+import re
 
 load_dotenv()
 
@@ -62,33 +63,51 @@ async def create_terraform_workspace(terraform_file: UploadFile, variables: Dict
             if key in variables:
                 azure_credentials[key] = variables.pop(key)
 
-        # Inject AWS Provider Block
+        # If we have AWS credentials, handle the AWS provider block
         if aws_credentials:
-            provider_block = 'provider "aws" {\n'
-            if "aws_access_key" in aws_credentials:
-                provider_block += f'  access_key = "{aws_credentials["aws_access_key"]}"\n'
-            if "aws_secret_key" in aws_credentials:
-                provider_block += f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n'
-            if "aws_region" in aws_credentials:
-                provider_block += f'  region     = "{aws_credentials["aws_region"]}"\n'
-            provider_block += '}\n'
-
-            # Remove any existing AWS provider blocks
-            lines = file_content_str.split('\n')
-            new_lines = []
-            skip = False
-            for line in lines:
-                if 'provider "aws"' in line:
-                    skip = True
-                    continue
-                if skip and '}' in line:
-                    skip = False
-                    continue
-                if not skip:
-                    new_lines.append(line)
+            # Parse existing AWS provider block if it exists
+            aws_provider_match = re.search(r'provider\s+"aws"\s+{([^}]*)}', file_content_str, re.DOTALL)
             
-            file_content_str = '\n'.join(new_lines)
-            file_content_str = provider_block + file_content_str
+            if aws_provider_match:
+                # Get existing provider configuration
+                existing_config = aws_provider_match.group(1)
+                # Parse existing values
+                existing_values = {}
+                for line in existing_config.strip().split('\n'):
+                    line = line.strip()
+                    if '=' in line:
+                        key, value = [x.strip() for x in line.split('=', 1)]
+                        existing_values[key] = value
+
+                # Only add credentials that don't exist
+                provider_block = 'provider "aws" {\n'
+                if "access_key" not in existing_values and "aws_access_key" in aws_credentials:
+                    provider_block += f'  access_key = "{aws_credentials["aws_access_key"]}"\n'
+                if "secret_key" not in existing_values and "aws_secret_key" in aws_credentials:
+                    provider_block += f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n'
+                if "region" not in existing_values and "aws_region" in aws_credentials:
+                    provider_block += f'  region     = "{aws_credentials["aws_region"]}"\n'
+                
+                # Add existing configuration back
+                for line in existing_config.strip().split('\n'):
+                    if line.strip():
+                        provider_block += f'  {line.strip()}\n'
+                
+                provider_block += '}\n'
+                
+                # Replace existing provider block
+                file_content_str = re.sub(r'provider\s+"aws"\s+{[^}]*}', provider_block.strip(), file_content_str)
+            else:
+                # No existing provider block, create new one
+                provider_block = 'provider "aws" {\n'
+                if "aws_access_key" in aws_credentials:
+                    provider_block += f'  access_key = "{aws_credentials["aws_access_key"]}"\n'
+                if "aws_secret_key" in aws_credentials:
+                    provider_block += f'  secret_key = "{aws_credentials["aws_secret_key"]}"\n'
+                if "aws_region" in aws_credentials:
+                    provider_block += f'  region     = "{aws_credentials["aws_region"]}"\n'
+                provider_block += '}\n'
+                file_content_str = provider_block + file_content_str
 
         # Inject GCP Provider Block
         if gcp_credentials:
