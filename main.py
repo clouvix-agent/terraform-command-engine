@@ -190,7 +190,7 @@ async def validate_terraform(
     credentials: HTTPAuthorizationCredentials = Depends(verify_token)
 ):
     """Validate terraform code and run plan, apply, and destroy if validation succeeds."""
-    workspace_dir = f"/app/terraform_workspace/{uuid.uuid4()}"
+    workspace_dir = f"/tmp/terraform_workspace/{uuid.uuid4()}"
     
     try:
         parsed_variables = json.loads(variables) if variables else None
@@ -202,6 +202,8 @@ async def validate_terraform(
             ["terraform", "init"],
             workspace_dir
         )
+        print("Init:")
+        print(init_result)
         if not init_result["success"]:
             # Attempt to destroy before returning error
             await execute_terraform_command(
@@ -222,6 +224,8 @@ async def validate_terraform(
             ["terraform", "validate", "-json"],
             workspace_dir
         )
+        print("Validate:")
+        print(validate_result)
         
         if not validate_result["success"]:
             # Attempt to destroy before returning error
@@ -243,6 +247,9 @@ async def validate_terraform(
             ["terraform", "plan"],
             workspace_dir
         )
+
+        print("Plan:")
+        print(plan_result)
         if not plan_result["success"]:
             # Attempt to destroy before returning error
             await execute_terraform_command(
@@ -263,6 +270,8 @@ async def validate_terraform(
             ["terraform", "apply", "-auto-approve"],
             workspace_dir
         )
+        print("Apply:")
+        print(apply_result)
         if not apply_result["success"]:
             # Attempt to destroy before returning error
             await execute_terraform_command(
@@ -283,6 +292,8 @@ async def validate_terraform(
             ["terraform", "destroy", "-auto-approve"],
             workspace_dir
         )
+        print("Destroy:")
+        print(destroy_result)
         if not destroy_result["success"]:
             return {
                 "success": False,
@@ -292,6 +303,7 @@ async def validate_terraform(
                     "message": "Terraform destroy failed"
                 }
             }
+
             
         # If all steps succeeded, return success with all outputs
         return {
